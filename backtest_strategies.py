@@ -1,3 +1,5 @@
+import argparse
+import sys
 import os
 import subprocess
 from pathlib import Path
@@ -30,12 +32,7 @@ def save_success_tracker(tracker):
         json.dump(tracker, file, indent=4)
 
 
-def find_pending_strategies(tracker):
-    """Lists strategies that haven't been successfully processed."""
-    return [name for name, status in tracker.items() if status == 0]
-
-
-def backtest_strategies(strategies, batch_size=10):
+def backtest_strategies(strategies, batch_size):
     """Backtests strategies in batches."""
     for batch in tqdm([strategies[i:i + batch_size] for i in range(0, len(strategies), batch_size)], desc="Backtesting"):
         execute_backtest_batch(batch)
@@ -102,125 +99,47 @@ def log_error(strategy_batch, error_message):
     """Logs errors for strategies in the batch."""
     for strategy in strategy_batch:
         print(f"Error for {strategy}: {error_message}")
-        success_tracker[strategy] = error_message
+        success_tracker[strategy] = "error"  # f"Error(1000 ch): {error_message[-1000:]} "
     save_success_tracker(success_tracker)
 
 
+def find_pending_strategies(tracker, retry_errors=False):
+    """Lists strategies that haven't been successfully processed or have errors, based on the retry_errors flag."""
+    pending_strategies = [name for name, status in tracker.items() if status == 0]
+    if retry_errors:
+        error_strategies = [name for name, status in tracker.items() if status == "error"]
+        for strategy in error_strategies:
+            tracker[strategy] = 0  # Reset the status to 0 for retrying
+        pending_strategies.extend(error_strategies)
+    return pending_strategies
+
+
+# Set up argparse to handle command line arguments
+parser = argparse.ArgumentParser(description="Backtest strategies.")
+parser.add_argument('--retry_errors', action='store_true',
+                    help="Retry strategies that previously encountered errors.")
+parser.add_argument('--batch_size', type=int, default=20,
+                    help="Number of strategies to process in each batch. Default is 20.")
+
+args = parser.parse_args()
+
+# Modify the main block to use the parsed arguments
 if __name__ == "__main__":
     initialize_directories()
     success_tracker = initialize_success_tracker()
-    pending_strategies = find_pending_strategies(success_tracker)
+
+    # Use args.retry_errors to check if retry_errors was specified
+    retry_errors = args.retry_errors
+
+    # Use args.batch_size for the batch size, defaulting to 20 if not provided
+    batch_size = args.batch_size
+
+    pending_strategies = find_pending_strategies(success_tracker, retry_errors=retry_errors)
     print(f"Pending strategies: {pending_strategies}")
-    backtest_strategies(pending_strategies)
+
+    backtest_strategies(pending_strategies, batch_size=batch_size)
+
+    # Save any updates made to the success tracker
+    save_success_tracker(success_tracker)
+
     print(f"Backtesting completed. Results stored in {RESULTS_DIR}")
-
-
-# import os
-# import subprocess
-# from pathlib import Path
-# import json
-# from tqdm import tqdm  # Import tqdm for progress tracking
-
-# # Directory where the strategy files are stored
-# strategy_dir = "user_data/strategies"
-# # Temporary directory to store the test results
-# test_results_dir = "MY_HELPER_SCRIPTS/MY_BACKTESTING_RESULTS"
-# # File to track global success
-# success_tracker_file = Path(test_results_dir) / "success_tracker.json"
-
-# # Ensure the test results directory exists
-# Path(test_results_dir).mkdir(parents=True, exist_ok=True)
-
-# # Initialize or load the success tracker
-# if success_tracker_file.exists():
-#     with open(success_tracker_file, 'r') as file:
-#         success_tracker = json.load(file)
-# else:
-#     success_tracker = {}
-#     # Pre-populate the success tracker with strategies set to 0
-#     for file in os.listdir(strategy_dir):
-#         if file.endswith(".py"):
-#             strategy_name = file[:-3]  # Exclude the '.py' extension
-#             success_tracker[strategy_name] = 0
-#     # Save the initialized success tracker
-#     with open(success_tracker_file, 'w') as file:
-#         json.dump(success_tracker, file, indent=4)
-
-
-# def list_strategies(directory):
-#     """List all .py files in the given directory and extract strategy names."""
-#     strategies = []
-#     for strategy_name, status in success_tracker.items():
-#         if status == 0:  # Only include strategies that haven't been successfully processed
-#             strategies.append(strategy_name)
-#     return strategies
-
-
-# def batch_backtest(strategies, batch_size):
-#     """Process strategies in batches and execute backtesting."""
-#     for i in tqdm(range(0, len(strategies), batch_size), desc="Processing batches"):
-#         batch = strategies[i:i + batch_size]
-#         execute_backtest(batch)
-
-
-# def log_results(strategy_batch):
-#     """
-#     Reads the BACKTESTING_RESULT.json and extracts results for each strategy,
-#     then saves the result for each strategy in a separate JSON file.
-#     """
-#     results_file_path = os.path.join(os.getcwd(), 'BACKTESTING_RESULT.json')
-#     with open(results_file_path, 'r') as file:
-#         backtesting_results = json.load(file)
-
-#     strategy_comparisons = backtesting_results.get("strategy_comparison", [])
-
-#     for strategy in strategy_batch:
-#         # Find the result object for the current strategy
-#         strategy_result = next(
-#             (item for item in strategy_comparisons if item.get("key") == strategy), None)
-
-#         if strategy_result:
-#             # Path for the strategy-specific result file
-#             result_file_path = Path(test_results_dir) / f"{strategy}_result.json"
-#             with open(result_file_path, 'w') as result_file:
-#                 json.dump(strategy_result, result_file, indent=4)
-#                 print(f"Results saved for strategy: {strategy}")
-#                 success_tracker[strategy] = 1  # Mark strategy as successfully backtested
-#         else:
-#             print(f"No results found for strategy: {strategy}")
-#             success_tracker[strategy] = "No results found"
-
-#     # Update the global success tracker file after processing the batch
-#     with open(success_tracker_file, 'w') as file:
-#         json.dump(success_tracker, file, indent=4)
-
-
-# def execute_backtest(strategy_batch):
-#     strategies_str = " ".join(strategy_batch)
-#     command = ['./run_backtest.sh', strategies_str]
-#     try:
-#         result = subprocess.run(command, capture_output=True, text=True)
-#         if result.returncode == 0:
-#             # Call log_results function after successful execution
-#             log_results(strategy_batch)
-#         else:
-#             error = result.stderr
-#             print(f"Error executing backtest for batch {strategy_batch}: {error}")
-#             for strategy in strategy_batch:
-#                 success_tracker[strategy] = error  # Log the error for the strategy
-#     except Exception as e:
-#         print(f"An unexpected error occurred: {e}")
-#         for strategy in strategy_batch:
-#             success_tracker[strategy] = str(e)  # Log the exception as the error for the strategy
-
-#     # Update the global success tracker file after each batch
-#     with open(success_tracker_file, 'w') as file:
-#         json.dump(success_tracker, file, indent=4)
-
-
-# # Adjust the main section to call batch_backtest with all strategies
-# if __name__ == "__main__":
-#     strategies = list_strategies(strategy_dir)  # Load strategies from the directory
-#     print(f"Found strategies: {strategies}")
-#     batch_backtest(strategies, batch_size=10)  # Process all strategies in batches
-#     print(f"Backtesting completed. Results stored in {test_results_dir}")
